@@ -1,5 +1,12 @@
 #include <Arduino.h>
-#include <IRremote.h>
+
+/*
+ * Включаем универсальный декодер для pulse distance/width протоколов.
+ * Это ДОЛЖНО быть сделано до #include <IRremote.hpp>
+ */
+#define DECODE_DISTANCE_WIDTH   // Универсальный декодер для pulse distance width протоколов
+
+#include <IRremote.hpp>
 
 // GPIO4 ──[1кОм]── База 2N2222 (NPN)
 //                 Коллектор ──[100 Ом]── IR LED ── VCC (3.3V или 5V)
@@ -30,17 +37,12 @@
 // Пины настраиваются через build_flags в platformio.ini
 // По умолчанию: ESP-01 — MY_IR_SEND_PIN=3 (GPIO3/RX), MY_IR_RECV_PIN=2 (GPIO2)
 //               ESP-12 — MY_IR_SEND_PIN=4 (GPIO4/D2), MY_IR_RECV_PIN=5 (GPIO5/D1)
-// ВАЖНО: используем MY_IR_ префикс, а не IR_, чтобы не конфликтовать с библиотечным IR_SEND_PIN
 #ifndef MY_IR_SEND_PIN
 #define MY_IR_SEND_PIN  3   // GPIO3 (RX) для ESP-01
 #endif
 #ifndef MY_IR_RECV_PIN
 #define MY_IR_RECV_PIN  2   // GPIO2 для ESP-01
 #endif
-
-// Длительность одного периода 38 кГц в микросекундах (26.3 мкс)
-// Используем 13 мкс для половины периода (HIGH + LOW)
-#define IR_HALF_PERIOD_US  13
 
 // Маркер конца пакета для команд и сообщений
 #define MILES_TAG_END_MARKER   0xE8
@@ -68,6 +70,21 @@
 #define MT_COMMAND_MARKER  0x83
 #define MT_MESSAGE_MARKER  0xE8
 #define MT_SYSTEM_MARKER   0x87
+
+// Структура с таймингами протокола MilesTag II для библиотеки IRremote
+static const DistanceWidthTimingInfoStruct sMilesTagTiming = {
+    MILES_TAG_HEADER_MARK,   // HeaderMarkMicros
+    MILES_TAG_HEADER_SPACE,  // HeaderSpaceMicros
+    MILES_TAG_ONE_MARK,      // OneMarkMicros
+    MILES_TAG_ONE_SPACE,     // OneSpaceMicros
+    MILES_TAG_ZERO_MARK,     // ZeroMarkMicros
+    MILES_TAG_ZERO_SPACE     // ZeroSpaceMicros
+};
+
+// Флаг, указывающий, что идёт отправка (чтобы игнорировать собственный сигнал)
+volatile bool isSending = false;
+// Время последней отправки (для игнорирования отражённого сигнала)
+unsigned long lastSendTime = 0;
 
 /**
  * Преобразует значение повреждения (1..100) в 4-битный код MilesTag II.
@@ -119,15 +136,15 @@ uint8_t codeToDamage(uint8_t code) {
 
 /**
  * Декодирует пакет MilesTag II.
- * code — данные после разворота бит (MSB-first, как в спецификации).
+ * Данные уже в MSB-first формате (как в спецификации).
  */
-void decodePacket(uint32_t code, uint16_t bits) {
+void decodePacket(uint32_t data, uint16_t bits) {
   if (bits != 14 && bits != 24) return;
 
   if (bits == 24) {
-    uint8_t byte1 = (code >> 16) & 0xFF;  // Старший байт
-    uint8_t byte2 = (code >> 8) & 0xFF;   // Средний байт
-    uint8_t byte3 = code & 0xFF;          // Младший байт
+    uint8_t byte1 = (data >> 16) & 0xFF;  // Старший байт
+    uint8_t byte2 = (data >> 8) & 0xFF;   // Средний байт
+    uint8_t byte3 = data & 0xFF;          // Младший байт
 
     Serial.println("=== Command ===");
     Serial.print("Bytes: ");
@@ -205,9 +222,9 @@ void decodePacket(uint32_t code, uint16_t bits) {
   } else {
     // 14 бит — пакет выстрела
     // Формат: 0 + ID(7) + Team(2) + DamageCode(4)
-    uint8_t id = (code >> 6) & 0x7F;
-    uint8_t team = (code >> 4) & 0x3;
-    uint8_t dmgCode = code & 0xF;
+    uint8_t id = (data >> 6) & 0x7F;
+    uint8_t team = (data >> 4) & 0x3;
+    uint8_t dmgCode = data & 0xF;
     uint8_t dmgValue = codeToDamage(dmgCode);
 
     Serial.println("=== Shoot ===");
@@ -232,59 +249,28 @@ uint16_t buildShootPacket(uint8_t id, uint8_t team, uint8_t damage) {
 }
 
 /**
- * Генерирует несущую 38 кГц на указанное количество микросекунд.
- * Использует оптимизированный busy-wait с прямым доступом к регистрам GPIO.
- * На ESP8266 (80 MHz) digitalWrite работает за ~6 тактов, что даёт
- * точную частоту 38 кГц с хорошей скважностью.
- * Приёмник продолжает работать — не используем таймеры.
- */
-void irMark(uint16_t durationUs) {
-  unsigned long start = micros();
-  while (micros() - start < durationUs) {
-    digitalWrite(MY_IR_SEND_PIN, HIGH);
-    delayMicroseconds(IR_HALF_PERIOD_US);
-    digitalWrite(MY_IR_SEND_PIN, LOW);
-    delayMicroseconds(IR_HALF_PERIOD_US);
-  }
-}
-
-/**
- * Держит пин LOW указанное количество микросекунд (пауза между марками).
- */
-void irSpace(uint16_t durationUs) {
-  digitalWrite(MY_IR_SEND_PIN, LOW);
-  delayMicroseconds(durationUs);
-}
-
-// Флаг, указывающий, что идёт отправка (чтобы игнорировать собственный сигнал)
-volatile bool isSending = false;
-// Время последней отправки (для игнорирования отражённого сигнала)
-unsigned long lastSendTime = 0;
-
-/**
  * Отправляет произвольный пакет данных по протоколу MilesTag II (Pulse Width, MSB first).
+ * Использует библиотечную функцию IrSender.sendPulseDistanceWidth().
+ *
  * @param data   данные для отправки
  * @param bits   количество бит (14 для выстрела, 24 для команды)
  */
 void sendPacket(uint32_t data, uint8_t bits) {
   isSending = true;
 
-  // Header: MARK 2400µs, SPACE 600µs
-  irMark(MILES_TAG_HEADER_MARK);
-  irSpace(MILES_TAG_HEADER_SPACE);
-
-  // Данные: MSB first (как в реальном тагере)
-  for (int8_t i = bits - 1; i >= 0; i--) {
-    if (data & (1UL << i)) {
-      // Bit 1: MARK 1250µs, SPACE 550µs
-      irMark(MILES_TAG_ONE_MARK);
-      irSpace(MILES_TAG_ONE_SPACE);
-    } else {
-      // Bit 0: MARK 650µs, SPACE 550µs
-      irMark(MILES_TAG_ZERO_MARK);
-      irSpace(MILES_TAG_ZERO_SPACE);
-    }
-  }
+  // Отправляем через библиотечную функцию с флагом PROTOCOL_IS_MSB_FIRST
+  // Параметры: частота, тайминги header/mark/space для 0/1, данные, биты, флаги, период повтора, кол-во повторов
+  IrSender.sendPulseDistanceWidth(
+      MILES_TAG_FREQ_KHZ,
+      MILES_TAG_HEADER_MARK, MILES_TAG_HEADER_SPACE,
+      MILES_TAG_ONE_MARK, MILES_TAG_ONE_SPACE,
+      MILES_TAG_ZERO_MARK, MILES_TAG_ZERO_SPACE,
+      data,
+      bits,
+      PROTOCOL_IS_MSB_FIRST,  // MilesTag использует MSB first
+      0,                       // RepeatPeriodMillis = 0 (без повторов)
+      0                        // NumberOfRepeats = 0
+  );
 
   isSending = false;
   lastSendTime = millis();
@@ -342,9 +328,17 @@ void sendDetonate() {
 void setup() {
   Serial.begin(9600);
   Serial.println("setup");
-  pinMode(MY_IR_SEND_PIN, OUTPUT);
-  digitalWrite(MY_IR_SEND_PIN, LOW);
-  IrReceiver.begin(MY_IR_RECV_PIN);
+
+  // Инициализация приёмника
+  IrReceiver.begin(MY_IR_RECV_PIN, ENABLE_LED_FEEDBACK);
+  Serial.print("IR receiver started on pin ");
+  Serial.println(MY_IR_RECV_PIN);
+
+  // Инициализация передатчика
+  // Для ESP8266 без IR_SEND_PIN нужно передать пин явно
+  IrSender.begin(MY_IR_SEND_PIN, false, 0);  // false = без LED feedback
+  Serial.print("IR sender started on pin ");
+  Serial.println(MY_IR_SEND_PIN);
 }
 
 void loop() {
@@ -361,13 +355,19 @@ void loop() {
       sendDetonate();
     }
     shootCycle = !shootCycle;
+
+    // После отправки перезапускаем приёмник (если используется общий таймер)
+    IrReceiver.restartAfterSend();
   }
 
   // Приём IR-сигналов
   if (IrReceiver.decode()) {
     // Игнорируем собственный сигнал (во время отправки и 100 мс после)
     if (!isSending && (millis() - lastSendTime > 100)) {
-      if (IrReceiver.decodedIRData.protocol == PULSE_WIDTH) {
+      // Протокол PULSE_WIDTH или PULSE_DISTANCE — то, что нужно для MilesTag
+      if (IrReceiver.decodedIRData.protocol == PULSE_WIDTH ||
+          IrReceiver.decodedIRData.protocol == PULSE_DISTANCE) {
+
         uint16_t bits = IrReceiver.decodedIRData.numberOfBits;
         uint32_t data = IrReceiver.decodedIRData.decodedRawData;
 
@@ -376,7 +376,7 @@ void loop() {
           data &= ((1UL << bits) - 1);
         }
 
-        // Библиотека IRremote для PULSE_WIDTH сохраняет биты LSB-first
+        // Библиотека IRremote для PULSE_WIDTH/PULSE_DISTANCE сохраняет биты LSB-first
         // (первый принятый бит = LSB). MilesTag II использует MSB-first,
         // поэтому разворачиваем биты.
         uint32_t dataRev = 0;
