@@ -29,19 +29,17 @@
 
   // Флаг, что нужно обновить экран
   bool displayNeedsUpdate = false;
-  unsigned long displayUpdateTime = 0;
-  #define DISPLAY_UPDATE_DELAY 2000  // Показываем сообщение 2 секунды, потом возвращаем статус
 
-  // Буферы для информации на экране
-  char displayLine1[21] = "MilesTag II";
-  char displayLine2[21] = "Ready";
-  char displayLine3[21] = "";
-  char displayLine4[21] = "";
-  // Прототипы функций OLED (определены ниже, но используются в decodePacket/sendShoot/sendCommand)
+  // Информация о последнем событии для OLED
+  char lastEvent[21] = "Ready";
+  char lastEventDetail[21] = "";
+  uint16_t rxCounter = 0;
+  uint16_t txCounter = 0;
+
+  // Прототипы функций OLED
   void initDisplay();
   void drawStatusScreen();
-  void showDisplayMessage(const char* line1, const char* line2, const char* line3, const char* line4);
-  void updateDisplayStatus();
+  const char* getCommandName(uint8_t cmd);
 #endif
 
 // если мощности не хватит с пинов, то можно через транзистор подключить:
@@ -178,6 +176,31 @@ uint8_t codeToDamage(uint8_t code) {
 }
 
 /**
+ * Возвращает название команды по её коду.
+ */
+const char* getCommandName(uint8_t cmd) {
+  switch (cmd) {
+    case CMD_DETONATE:    return "Detonate";
+    case CMD_KILL:        return "Kill";
+    case CMD_PAUSE:       return "Pause";
+    case CMD_START_GAME:  return "StartGame";
+    case CMD_RESPAWN:     return "Respawn";
+    case CMD_NEW_GAME:    return "NewGame";
+    case CMD_FILL_CLIP:   return "FillClip";
+    case CMD_END_GAME:    return "EndGame";
+    case CMD_INIT_PLAYER: return "InitPlayer";
+    case CMD_NEW_GAME_RDY:return "NewGameRdy";
+    case CMD_RESTORE_LIFE:return "RestoreLife";
+    case CMD_RESTORE_ARMOR:return "RestoreArmor";
+    case CMD_RESET_SCORE: return "ResetScore";
+    case CMD_CHECK_SENSORS:return "CheckSens";
+    case CMD_IMMOBILIZE:  return "Immobilize";
+    case CMD_UNLOAD:      return "Unload";
+    default:              return "Unknown";
+  }
+}
+
+/**
  * Декодирует пакет MilesTag II.
  * Данные уже в MSB-first формате (как в спецификации).
  */
@@ -202,65 +225,57 @@ void decodePacket(uint32_t data, uint16_t bits) {
       Serial.print("Command code: 0x");
       Serial.println(byte2, HEX);
 
+      #ifdef HAS_OLED
+        rxCounter++;
+        snprintf(lastEvent, sizeof(lastEvent), "RX: CMD 0x%02X", byte2);
+        snprintf(lastEventDetail, sizeof(lastEventDetail), "%s", getCommandName(byte2));
+        displayNeedsUpdate = true;
+      #endif
+
+      // Печатаем название команды
+      Serial.print("-> ");
+      Serial.println(getCommandName(byte2));
+
+      // Выполняем команду
       switch (byte2) {
         case CMD_DETONATE:
-          Serial.println("-> Detonate (взорвать игрока)");
           break;
         case CMD_KILL:
-          Serial.println("-> Admin kill");
           break;
         case CMD_PAUSE:
-          Serial.println("-> Pause/Unpause");
           break;
         case CMD_START_GAME:
-          Serial.println("-> Start game");
           lives = 100;
           lastHitTime = 0;
           detonatePending = false;
           Serial.print("Lives set to: ");
           Serial.println(lives);
-          #ifdef HAS_OLED
-            showDisplayMessage("Game Started", "Lives: 100", "", "");
-          #endif
           break;
         case CMD_RESPAWN:
-          Serial.println("-> Respawn");
           break;
         case CMD_NEW_GAME:
-          Serial.println("-> New game (immediate)");
           break;
         case CMD_FILL_CLIP:
-          Serial.println("-> Fill clip");
           break;
         case CMD_END_GAME:
-          Serial.println("-> End game");
           break;
         case CMD_INIT_PLAYER:
-          Serial.println("-> Init player");
           break;
         case CMD_NEW_GAME_RDY:
-          Serial.println("-> New game (ready)");
           break;
         case CMD_RESTORE_LIFE:
-          Serial.println("-> Restore life");
           break;
         case CMD_RESTORE_ARMOR:
-          Serial.println("-> Restore armor");
           break;
         case CMD_RESET_SCORE:
-          Serial.println("-> Reset score");
           break;
         case CMD_CHECK_SENSORS:
-          Serial.println("-> Check sensors");
           break;
         case CMD_IMMOBILIZE:
-          Serial.println("-> Immobilize");
           break;
         case CMD_UNLOAD:
-          Serial.println("-> Unload weapon");
           break;
         default:
-          Serial.println("-> Unknown command");
           break;
       }
     } else if (byte1 == MT_MESSAGE_MARKER || byte3 == MILES_TAG_END_MARKER) {
@@ -298,26 +313,34 @@ void decodePacket(uint32_t data, uint16_t bits) {
         Serial.println(lives);
 
         #ifdef HAS_OLED
-          char hitBuf[21];
-          snprintf(hitBuf, sizeof(hitBuf), "Hit! T:%u D:%u", team, dmgValue);
-          char lifeBuf[21];
-          snprintf(lifeBuf, sizeof(lifeBuf), "Lives: %u", lives);
-          showDisplayMessage(hitBuf, lifeBuf, "", "");
+          rxCounter++;
+          snprintf(lastEvent, sizeof(lastEvent), "RX: HIT ID%u T%u", id, team);
+          snprintf(lastEventDetail, sizeof(lastEventDetail), "Dmg:%u HP:%u", dmgValue, lives);
+          displayNeedsUpdate = true;
         #endif
 
         if (lives <= 0) {
-          Serial.println("Player destroyed! Detonate pending in DETONATE_DELAYms...");
+          Serial.println("Player destroyed! Detonate pending...");
           detonatePending = true;
           detonateTime = now + DETONATE_DELAY;
-          #ifdef HAS_OLED
-            showDisplayMessage("DESTROYED!", "Detonate sent", "", "");
-          #endif
         }
       } else {
         Serial.println("Hit ignored (SHOOT_WINDOWms protection)");
+        #ifdef HAS_OLED
+          rxCounter++;
+          snprintf(lastEvent, sizeof(lastEvent), "RX: HIT IGNORED");
+          snprintf(lastEventDetail, sizeof(lastEventDetail), "ID%u T%u D%u", id, team, dmgValue);
+          displayNeedsUpdate = true;
+        #endif
       }
     } else {
       Serial.println("Shoot ignored (game not started)");
+      #ifdef HAS_OLED
+        rxCounter++;
+        snprintf(lastEvent, sizeof(lastEvent), "RX: SHOOT IGNORED");
+        snprintf(lastEventDetail, sizeof(lastEventDetail), "NoGame ID%u T%u", id, team);
+        displayNeedsUpdate = true;
+      #endif
     }
   }
 }
@@ -375,17 +398,16 @@ void sendShoot(uint8_t id, uint8_t team, uint8_t damage) {
   Serial.println(damage);
   Serial.print("Packet: 0x");
   Serial.println(packet, HEX);
-  Serial.print("Packet (bin): ");
-  Serial.println(packet, BIN);
 
   sendPacket(packet, 14);
 
   Serial.println("--- Shoot sent ---");
 
   #ifdef HAS_OLED
-    char shootBuf[21];
-    snprintf(shootBuf, sizeof(shootBuf), "Shot: T%u D%u", team, damage);
-    showDisplayMessage(shootBuf, "", "", "");
+    txCounter++;
+    snprintf(lastEvent, sizeof(lastEvent), "TX: SHOT ID%u T%u", id, team);
+    snprintf(lastEventDetail, sizeof(lastEventDetail), "Dmg:%u", damage);
+    displayNeedsUpdate = true;
   #endif
 }
 
@@ -399,17 +421,16 @@ void sendCommand(uint8_t command) {
   Serial.println("--- Sending command ---");
   Serial.print("Command: 0x");
   Serial.println(command, HEX);
-  Serial.print("Packet: 0x");
-  Serial.println(packet, HEX);
 
   sendPacket(packet, 24);
 
   Serial.println("--- Command sent ---");
 
   #ifdef HAS_OLED
-    char cmdBuf[21];
-    snprintf(cmdBuf, sizeof(cmdBuf), "Cmd: 0x%02X", command);
-    showDisplayMessage(cmdBuf, "", "", "");
+    txCounter++;
+    snprintf(lastEvent, sizeof(lastEvent), "TX: CMD 0x%02X", command);
+    snprintf(lastEventDetail, sizeof(lastEventDetail), "%s", getCommandName(command));
+    displayNeedsUpdate = true;
   #endif
 }
 
@@ -442,77 +463,40 @@ void initDisplay() {
   display.drawString(64, 36, "LOLIN32 OLED");
   display.drawString(64, 50, "Initializing...");
   display.display();
-  delay(1500);
+  delay(1000);
 
-  // Сброс в статус
-  snprintf(displayLine1, sizeof(displayLine1), "MilesTag II");
-  snprintf(displayLine2, sizeof(displayLine2), "Lives: %u", lives);
-  snprintf(displayLine3, sizeof(displayLine3), "Ready");
   displayNeedsUpdate = true;
-  displayUpdateTime = millis();
 }
 
 /**
- * Обновляет экран статической информацией (статус).
+ * Рисует основной экран статуса.
+ * Строка 0: счетчики RX/TX
+ * Строка 1: последнее событие
+ * Строка 2: детали события
+ * Строка 3: Lives (если игра идёт)
+ * Полоска здоровья внизу
  */
 void drawStatusScreen() {
   display.clear();
   display.setFont(ArialMT_Plain_10);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
 
-  display.drawString(0, 0, displayLine1);
-  display.drawString(0, 14, displayLine2);
-  display.drawString(0, 28, displayLine3);
-  display.drawString(0, 42, displayLine4);
+  // Строка 0: счетчики RX/TX
+  char header[21];
+  snprintf(header, sizeof(header), "RX/TX: %04u/%04u", rxCounter, txCounter);
+  display.drawString(0, 0, header);
 
-  // Индикатор жизни — простая полоска (своя реализация)
-  if (lives > 0) {
-    uint8_t barWidth = map(lives, 1, 100, 0, 118);
-    if (barWidth > 118) barWidth = 118;
-    // Рамка
-    display.drawRect(5, 56, 118, 8);
-    // Заливка
-    display.fillRect(6, 57, barWidth, 6);
+  // Строка 1: последнее событие
+  display.drawString(0, 14, lastEvent);
+
+  // Строка 2: детали
+  display.drawString(0, 28, lastEventDetail);
+
+  if (lives <= 0) {
+    display.drawString(0, 42, "Game not started");
   }
 
   display.display();
-}
-
-/**
- * Показывает временное сообщение на экране (на DISPLAY_UPDATE_DELAY мс),
- * после чего возвращается к экрану статуса.
- */
-void showDisplayMessage(const char* line1, const char* line2, const char* line3, const char* line4) {
-  display.clear();
-  display.setFont(ArialMT_Plain_10);
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-
-  if (line1) display.drawString(0, 0, line1);
-  if (line2) display.drawString(0, 14, line2);
-  if (line3) display.drawString(0, 28, line3);
-  if (line4) display.drawString(0, 42, line4);
-
-  display.display();
-
-  // Запоминаем, что через DISPLAY_UPDATE_DELAY нужно вернуть статус
-  displayNeedsUpdate = true;
-  displayUpdateTime = millis();
-}
-
-/**
- * Обновляет строки статуса на экране.
- */
-void updateDisplayStatus() {
-  snprintf(displayLine1, sizeof(displayLine1), "MilesTag II");
-  snprintf(displayLine2, sizeof(displayLine2), "Lives: %u", lives);
-  if (lives == 0) {
-    snprintf(displayLine3, sizeof(displayLine3), "Game not started");
-    snprintf(displayLine4, sizeof(displayLine4), "");
-  } else {
-    snprintf(displayLine3, sizeof(displayLine3), "Ready");
-    snprintf(displayLine4, sizeof(displayLine4), "");
-  }
-  drawStatusScreen();
   displayNeedsUpdate = false;
 }
 
@@ -540,10 +524,10 @@ void setup() {
 }
 
 void loop() {
-  // Обновление OLED: возврат к экрану статуса после временного сообщения
+  // Обновление OLED (по запросу от событий)
   #ifdef HAS_OLED
-    if (displayNeedsUpdate && (millis() - displayUpdateTime >= DISPLAY_UPDATE_DELAY)) {
-      updateDisplayStatus();
+    if (displayNeedsUpdate) {
+      drawStatusScreen();
     }
   #endif
 
