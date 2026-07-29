@@ -32,9 +32,6 @@
 #define MILES_TAG_ZERO_MARK     650
 #define MILES_TAG_ZERO_SPACE    550
 
-// Период отправки выстрела (мс)
-#define SHOOT_INTERVAL_MS       5000
-
 // Пины настраиваются через build_flags в platformio.ini
 // По умолчанию: ESP-01 — MY_IR_SEND_PIN=3 (GPIO3/RX), MY_IR_RECV_PIN=2 (GPIO2)
 //               ESP-12 — MY_IR_SEND_PIN=4 (GPIO4/D2), MY_IR_RECV_PIN=5 (GPIO5/D1)
@@ -86,6 +83,15 @@ static const DistanceWidthTimingInfoStruct sMilesTagTiming = {
 volatile bool isSending = false;
 // Время последней отправки (для игнорирования отражённого сигнала)
 unsigned long lastSendTime = 0;
+
+#define SHOOT_WINDOW 500
+#define DETONATE_DELAY 500
+
+// Состояние игры
+uint8_t lives = 0;              // 0 = игра не начата, >0 = текущее количество жизней
+unsigned long lastHitTime = 0;  // Время последнего попадания (для защиты 500 мс)
+bool detonatePending = false;   // Флаг: нужно отправить Detonate через 500 мс
+unsigned long detonateTime = 0; // Время, когда нужно отправить Detonate
 
 /**
  * Преобразует значение повреждения (1..100) в 4-битный код MilesTag II.
@@ -172,6 +178,11 @@ void decodePacket(uint32_t data, uint16_t bits) {
           break;
         case CMD_START_GAME:
           Serial.println("-> Start game");
+          lives = 100;
+          lastHitTime = 0;
+          detonatePending = false;
+          Serial.print("Lives set to: ");
+          Serial.println(lives);
           break;
         case CMD_RESPAWN:
           Serial.println("-> Respawn");
@@ -237,6 +248,27 @@ void decodePacket(uint32_t data, uint16_t bits) {
     Serial.println(dmgCode, BIN);
     Serial.print("Damage value: ");
     Serial.println(dmgValue);
+
+    // Обработка попадания
+    if (lives > 0) {
+      unsigned long now = millis();
+      if (now - lastHitTime >= SHOOT_WINDOW) {
+        lastHitTime = now;
+        lives = (dmgValue >= lives) ? 0 : lives - dmgValue;
+        Serial.print("Lives remaining: ");
+        Serial.println(lives);
+
+        if (lives <= 0) {
+          Serial.println("Player destroyed! Detonate pending in DETONATE_DELAYms...");
+          detonatePending = true;
+          detonateTime = now + DETONATE_DELAY;
+        }
+      } else {
+        Serial.println("Hit ignored (SHOOT_WINDOWms protection)");
+      }
+    } else {
+      Serial.println("Shoot ignored (game not started)");
+    }
   }
 }
 
@@ -343,21 +375,10 @@ void setup() {
 }
 
 void loop() {
-  static unsigned long lastShootTime = 0;
-  static bool shootCycle = true;
-
-  // Чередуем выстрел и команду: выстрел -> команда -> выстрел -> ...
-  if (millis() - lastShootTime >= SHOOT_INTERVAL_MS) {
-    lastShootTime = millis();
-
-    if (shootCycle) {
-      sendShoot(DEFAULT_ID, DEFAULT_TEAM, DEFAULT_DAMAGE);
-    } else {
-      sendDetonate();
-    }
-    shootCycle = !shootCycle;
-
-    // После отправки перезапускаем приёмник (если используется общий таймер)
+  // Отправка Detonate через 500 мс после смерти игрока
+  if (detonatePending && millis() - detonateTime >= DETONATE_DELAY) {
+    detonatePending = false;
+    sendDetonate();
     IrReceiver.restartAfterSend();
   }
 
