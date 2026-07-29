@@ -8,8 +8,44 @@
 
 #include <IRremote.hpp>
 
+// ===== OLED дисплей (Wemos LOLIN32 OLED — SSD1306 128x64, I2C) =====
+#ifdef HAS_OLED
+  #include <SSD1306Wire.h>
+
+  // Адрес и пины I2C задаются через build_flags:
+  //   OLED_ADDR, OLED_SDA, OLED_SCL
+  #ifndef OLED_ADDR
+    #define OLED_ADDR 0x3C
+  #endif
+  #ifndef OLED_SDA
+    #define OLED_SDA 5
+  #endif
+  #ifndef OLED_SCL
+    #define OLED_SCL 4
+  #endif
+
+  // Создаём объект дисплея
+  SSD1306Wire display(OLED_ADDR, OLED_SDA, OLED_SCL);
+
+  // Флаг, что нужно обновить экран
+  bool displayNeedsUpdate = false;
+  unsigned long displayUpdateTime = 0;
+  #define DISPLAY_UPDATE_DELAY 2000  // Показываем сообщение 2 секунды, потом возвращаем статус
+
+  // Буферы для информации на экране
+  char displayLine1[21] = "MilesTag II";
+  char displayLine2[21] = "Ready";
+  char displayLine3[21] = "";
+  char displayLine4[21] = "";
+  // Прототипы функций OLED (определены ниже, но используются в decodePacket/sendShoot/sendCommand)
+  void initDisplay();
+  void drawStatusScreen();
+  void showDisplayMessage(const char* line1, const char* line2, const char* line3, const char* line4);
+  void updateDisplayStatus();
+#endif
+
 // если мощности не хватит с пинов, то можно через транзистор подключить:
-// GPIO4 ──[1кОм]── База 2N2222 (NPN)
+// GPIO_ ──[1кОм]── База 2N2222 (NPN)
 //                 Коллектор ──[100 Ом]── IR LED ── VCC (3.3V или 5V)
 //                 Эмиттер ─── GND
 
@@ -183,6 +219,9 @@ void decodePacket(uint32_t data, uint16_t bits) {
           detonatePending = false;
           Serial.print("Lives set to: ");
           Serial.println(lives);
+          #ifdef HAS_OLED
+            showDisplayMessage("Game Started", "Lives: 100", "", "");
+          #endif
           break;
         case CMD_RESPAWN:
           Serial.println("-> Respawn");
@@ -258,10 +297,21 @@ void decodePacket(uint32_t data, uint16_t bits) {
         Serial.print("Lives remaining: ");
         Serial.println(lives);
 
+        #ifdef HAS_OLED
+          char hitBuf[21];
+          snprintf(hitBuf, sizeof(hitBuf), "Hit! T:%u D:%u", team, dmgValue);
+          char lifeBuf[21];
+          snprintf(lifeBuf, sizeof(lifeBuf), "Lives: %u", lives);
+          showDisplayMessage(hitBuf, lifeBuf, "", "");
+        #endif
+
         if (lives <= 0) {
           Serial.println("Player destroyed! Detonate pending in DETONATE_DELAYms...");
           detonatePending = true;
           detonateTime = now + DETONATE_DELAY;
+          #ifdef HAS_OLED
+            showDisplayMessage("DESTROYED!", "Detonate sent", "", "");
+          #endif
         }
       } else {
         Serial.println("Hit ignored (SHOOT_WINDOWms protection)");
@@ -331,6 +381,12 @@ void sendShoot(uint8_t id, uint8_t team, uint8_t damage) {
   sendPacket(packet, 14);
 
   Serial.println("--- Shoot sent ---");
+
+  #ifdef HAS_OLED
+    char shootBuf[21];
+    snprintf(shootBuf, sizeof(shootBuf), "Shot: T%u D%u", team, damage);
+    showDisplayMessage(shootBuf, "", "", "");
+  #endif
 }
 
 /**
@@ -349,6 +405,12 @@ void sendCommand(uint8_t command) {
   sendPacket(packet, 24);
 
   Serial.println("--- Command sent ---");
+
+  #ifdef HAS_OLED
+    char cmdBuf[21];
+    snprintf(cmdBuf, sizeof(cmdBuf), "Cmd: 0x%02X", command);
+    showDisplayMessage(cmdBuf, "", "", "");
+  #endif
 }
 
 /**
@@ -357,6 +419,104 @@ void sendCommand(uint8_t command) {
 void sendDetonate() {
   sendCommand(CMD_DETONATE);
 }
+
+// ===== Функции для OLED дисплея =====
+#ifdef HAS_OLED
+
+/**
+ * Инициализация дисплея.
+ * Вызывается один раз в setup().
+ */
+void initDisplay() {
+  display.init();
+  display.flipScreenVertically();
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+  // Приветственный экран
+  display.clear();
+  display.setFont(ArialMT_Plain_16);
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(64, 10, "MilesTag II");
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(64, 36, "LOLIN32 OLED");
+  display.drawString(64, 50, "Initializing...");
+  display.display();
+  delay(1500);
+
+  // Сброс в статус
+  snprintf(displayLine1, sizeof(displayLine1), "MilesTag II");
+  snprintf(displayLine2, sizeof(displayLine2), "Lives: %u", lives);
+  snprintf(displayLine3, sizeof(displayLine3), "Ready");
+  displayNeedsUpdate = true;
+  displayUpdateTime = millis();
+}
+
+/**
+ * Обновляет экран статической информацией (статус).
+ */
+void drawStatusScreen() {
+  display.clear();
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+  display.drawString(0, 0, displayLine1);
+  display.drawString(0, 14, displayLine2);
+  display.drawString(0, 28, displayLine3);
+  display.drawString(0, 42, displayLine4);
+
+  // Индикатор жизни — простая полоска (своя реализация)
+  if (lives > 0) {
+    uint8_t barWidth = map(lives, 1, 100, 0, 118);
+    if (barWidth > 118) barWidth = 118;
+    // Рамка
+    display.drawRect(5, 56, 118, 8);
+    // Заливка
+    display.fillRect(6, 57, barWidth, 6);
+  }
+
+  display.display();
+}
+
+/**
+ * Показывает временное сообщение на экране (на DISPLAY_UPDATE_DELAY мс),
+ * после чего возвращается к экрану статуса.
+ */
+void showDisplayMessage(const char* line1, const char* line2, const char* line3, const char* line4) {
+  display.clear();
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+  if (line1) display.drawString(0, 0, line1);
+  if (line2) display.drawString(0, 14, line2);
+  if (line3) display.drawString(0, 28, line3);
+  if (line4) display.drawString(0, 42, line4);
+
+  display.display();
+
+  // Запоминаем, что через DISPLAY_UPDATE_DELAY нужно вернуть статус
+  displayNeedsUpdate = true;
+  displayUpdateTime = millis();
+}
+
+/**
+ * Обновляет строки статуса на экране.
+ */
+void updateDisplayStatus() {
+  snprintf(displayLine1, sizeof(displayLine1), "MilesTag II");
+  snprintf(displayLine2, sizeof(displayLine2), "Lives: %u", lives);
+  if (lives == 0) {
+    snprintf(displayLine3, sizeof(displayLine3), "Game not started");
+    snprintf(displayLine4, sizeof(displayLine4), "");
+  } else {
+    snprintf(displayLine3, sizeof(displayLine3), "Ready");
+    snprintf(displayLine4, sizeof(displayLine4), "");
+  }
+  drawStatusScreen();
+  displayNeedsUpdate = false;
+}
+
+#endif // HAS_OLED
 
 void setup() {
   Serial.begin(9600);
@@ -372,9 +532,21 @@ void setup() {
   IrSender.begin(MY_IR_SEND_PIN, false, 0);  // false = без LED feedback
   Serial.print("IR sender started on pin ");
   Serial.println(MY_IR_SEND_PIN);
+
+  // Инициализация OLED дисплея (если есть)
+  #ifdef HAS_OLED
+    initDisplay();
+  #endif
 }
 
 void loop() {
+  // Обновление OLED: возврат к экрану статуса после временного сообщения
+  #ifdef HAS_OLED
+    if (displayNeedsUpdate && (millis() - displayUpdateTime >= DISPLAY_UPDATE_DELAY)) {
+      updateDisplayStatus();
+    }
+  #endif
+
   // Отправка Detonate через 500 мс после смерти игрока
   if (detonatePending && millis() - detonateTime >= DETONATE_DELAY) {
     detonatePending = false;
