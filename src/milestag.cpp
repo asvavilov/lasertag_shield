@@ -119,12 +119,14 @@ volatile bool isSending = false;
 unsigned long lastSendTime = 0;
 
 #define SHOOT_WINDOW 500
+#define LAST_SEND_WINDOW 100
 #define DETONATE_DELAY 500
+#define DETONATE_COUNT 4
 
 // Состояние игры
 uint8_t lives = 0;              // 0 = игра не начата, >0 = текущее количество жизней
-unsigned long lastHitTime = 0;  // Время последнего попадания (для защиты 500 мс)
-bool detonatePending = false;   // Флаг: нужно отправить Detonate через 500 мс
+unsigned long lastHitTime = 0;  // Время последнего попадания (для защиты SHOOT_WINDOW мс)
+uint8_t detonateCount = 0;   // Флаг: нужно отправить Detonate через DETONATE_DELAY мс
 unsigned long detonateTime = 0; // Время, когда нужно отправить Detonate
 
 /**
@@ -251,7 +253,7 @@ void decodePacket(uint32_t data, uint16_t bits) {
         case CMD_NEW_GAME:
           lives = 100;
           lastHitTime = 0;
-          detonatePending = false;
+          detonateCount = 0;
           Serial.print("Lives set to: ");
           Serial.println(lives);
           break;
@@ -321,7 +323,7 @@ void decodePacket(uint32_t data, uint16_t bits) {
 
         if (lives <= 0) {
           Serial.println("Player destroyed! Detonate pending...");
-          detonatePending = true;
+          detonateCount = DETONATE_COUNT;
           detonateTime = now + DETONATE_DELAY;
         }
       } else {
@@ -531,17 +533,20 @@ void loop() {
     }
   #endif
 
-  // Отправка Detonate через 500 мс после смерти игрока
-  if (detonatePending && millis() - detonateTime >= DETONATE_DELAY) {
-    detonatePending = false;
+  // Отправка Detonate через DETONATE_DELAY мс после смерти игрока
+  if (detonateCount > 0 && detonateTime < millis()) {
+    detonateCount--;
+    detonateTime = millis() + DETONATE_DELAY;
     sendDetonate();
-    IrReceiver.restartAfterSend();
+    if (detonateCount == 0) {
+      IrReceiver.restartAfterSend();
+    }
   }
 
   // Приём IR-сигналов
   if (IrReceiver.decode()) {
-    // Игнорируем собственный сигнал (во время отправки и 100 мс после)
-    if (!isSending && (millis() - lastSendTime > 100)) {
+    // Игнорируем собственный сигнал (во время отправки и LAST_SEND_WINDOW мс после)
+    if (!isSending && (lastSendTime + LAST_SEND_WINDOW < millis())) {
       // Протокол PULSE_WIDTH или PULSE_DISTANCE — то, что нужно для MilesTag
       if (IrReceiver.decodedIRData.protocol == PULSE_WIDTH ||
           IrReceiver.decodedIRData.protocol == PULSE_DISTANCE) {
