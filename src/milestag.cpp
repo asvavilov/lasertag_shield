@@ -245,15 +245,15 @@ void decodePacket(uint32_t data, uint16_t bits) {
         case CMD_PAUSE:
           break;
         case CMD_START_GAME:
+          break;
+        case CMD_RESPAWN:
+          break;
+        case CMD_NEW_GAME:
           lives = 100;
           lastHitTime = 0;
           detonatePending = false;
           Serial.print("Lives set to: ");
           Serial.println(lives);
-          break;
-        case CMD_RESPAWN:
-          break;
-        case CMD_NEW_GAME:
           break;
         case CMD_FILL_CLIP:
           break;
