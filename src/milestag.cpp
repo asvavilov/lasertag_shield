@@ -54,17 +54,13 @@
 
 // Тайминги MilesTag II Data Protocol (Pulse Width)
 // Частота 38 кГц
-// Тайминги взяты из реального замера сигнала тагера:
-//   Header: 2400, 600
-//   Bit 1:  1250, 550
-//   Bit 0:   650, 550
 #define MILES_TAG_FREQ_KHZ      38
 #define MILES_TAG_HEADER_MARK   2400
 #define MILES_TAG_HEADER_SPACE  600
-#define MILES_TAG_ONE_MARK      1250
-#define MILES_TAG_ONE_SPACE     550
-#define MILES_TAG_ZERO_MARK     650
-#define MILES_TAG_ZERO_SPACE    550
+#define MILES_TAG_ONE_MARK      1200
+#define MILES_TAG_ONE_SPACE     600
+#define MILES_TAG_ZERO_MARK     600
+#define MILES_TAG_ZERO_SPACE    600
 
 // Пины настраиваются через build_flags в platformio.ini
 // По умолчанию: ESP-01 — MY_IR_SEND_PIN=3 (GPIO3/RX), MY_IR_RECV_PIN=2 (GPIO2)
