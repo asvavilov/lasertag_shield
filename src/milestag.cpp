@@ -118,7 +118,7 @@ unsigned long lastSendTime = 0;
 #define LAST_SEND_WINDOW 100
 #define DETONATE_DELAY 500
 #define DETONATE_COUNT 1
-#define REPEAT_PERIOD_MILLIS 100
+#define REPEAT_PERIOD_MILLIS 500
 #define NUMBER_OF_REPEATS 4
 
 // Состояние игры
