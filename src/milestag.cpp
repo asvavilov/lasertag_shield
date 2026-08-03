@@ -117,7 +117,9 @@ unsigned long lastSendTime = 0;
 #define SHOOT_WINDOW 500
 #define LAST_SEND_WINDOW 100
 #define DETONATE_DELAY 500
-#define DETONATE_COUNT 4
+#define DETONATE_COUNT 1
+#define REPEAT_PERIOD_MILLIS 100
+#define NUMBER_OF_REPEATS 4
 
 // Состояние игры
 uint8_t lives = 0;              // 0 = игра не начата, >0 = текущее количество жизней
@@ -372,8 +374,8 @@ void sendPacket(uint32_t data, uint8_t bits) {
       data,
       bits,
       PROTOCOL_IS_MSB_FIRST,  // MilesTag использует MSB first
-      0,                       // RepeatPeriodMillis = 0 (без повторов)
-      0                        // NumberOfRepeats = 0
+      REPEAT_PERIOD_MILLIS,                       // RepeatPeriodMillis = 0 (без повторов)
+      NUMBER_OF_REPEATS                        // NumberOfRepeats = 0
   );
 
   isSending = false;
